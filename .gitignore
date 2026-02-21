@@ -9,5 +9,11 @@ __pycache__/
 # Model checkpoints and outputs
 graph/output/
 
+*.json
+*.txt
+
+liar-bert-finetuned-final
+twitter-bert-finetuned
+
 # OS
 .DS_Store
