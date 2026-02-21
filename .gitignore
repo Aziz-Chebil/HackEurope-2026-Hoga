@@ -12,7 +12,7 @@ graph/output/
 *.json
 *.txt
 
-liar-bert-finetuned-final
+twitter-bert-finetuned-final
 twitter-bert-finetuned
 
 # OS
