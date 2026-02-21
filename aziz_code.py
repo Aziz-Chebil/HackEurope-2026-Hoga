@@ -1,16 +1,7 @@
-def create_csv():
+def create_csv(test_data):
     import pandas as pd
-    import json
 
-    # ── Load all splits ───────────────────────────────────────────────────────────
-    def load_json(filepath):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        return data
 
-    train_data = load_json("train.json")
-    dev_data   = load_json("dev.json")
-    test_data  = load_json("test.json")
     def parse_entries(data, split_name):
         rows = []
         for entry in data:
@@ -48,7 +39,7 @@ def create_csv():
                 'domain'          : entry.get('domain', ''),
             }
             rows.append(row)
-            return rows
+        return rows
     test_rows  = parse_entries(test_data,  'test')
     test_df  = pd.DataFrame(test_rows)
     return test_df
@@ -157,8 +148,3 @@ def create_features3(df):
 
 model    = saved['model']
 features = saved['features']
-
-df = create_csv()
-df = create_features3(df)
-
-results = predict_bot_probability(df, model,features)
