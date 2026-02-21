@@ -9,7 +9,9 @@ __pycache__/
 # Model checkpoints and outputs
 graph/output/
 
-*.json
+dev.json
+test.json
+train.json
 *.txt
 
 twitter-bert-finetuned-final
