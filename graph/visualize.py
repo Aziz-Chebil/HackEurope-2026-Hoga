@@ -97,7 +97,7 @@ def plot_embeddings_tsne(embeddings, labels, cfg: Config, n_samples: int = 3000)
         labels = labels[idx]
 
     print(f"Running t-SNE on {len(embeddings)} embeddings...")
-    tsne = TSNE(n_components=2, random_state=cfg.seed, perplexity=30, n_iter=1000)
+    tsne = TSNE(n_components=2, random_state=cfg.seed, perplexity=30, max_iter=1000)
     coords = tsne.fit_transform(embeddings)
 
     fig, ax = plt.subplots(figsize=(8, 7))

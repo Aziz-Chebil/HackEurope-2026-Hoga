@@ -7,7 +7,6 @@ __pycache__/
 *.pyo
 
 # Model checkpoints and outputs
-graph/checkpoints/
 graph/output/
 
 # OS
