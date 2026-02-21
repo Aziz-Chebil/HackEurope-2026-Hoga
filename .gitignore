@@ -1,2 +1,14 @@
-*.json
-*.txt
+# Data (downloaded at runtime via kagglehub)
+archive/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Model checkpoints and outputs
+graph/checkpoints/
+graph/output/
+
+# OS
+.DS_Store
