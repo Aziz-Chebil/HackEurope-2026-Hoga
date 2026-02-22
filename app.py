@@ -2,7 +2,6 @@
 
 import json
 import os
-import pickle
 import random
 import re
 import sys
@@ -21,13 +20,6 @@ import streamlit as st                     # noqa: E402
 import torch                               # noqa: E402
 import torch.nn.functional as F            # noqa: E402
 from sklearn.metrics import ConfusionMatrixDisplay  # noqa: E402
-from transformers import (                 # noqa: E402
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-    pipeline as hf_pipeline,
-)
-
-from aziz_code import create_csv, create_features3, predict_bot_probability  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Allow imports from graph/
@@ -178,88 +170,6 @@ def cached_evaluate_test(_model, _data, _cfg, model_type: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Random Forest model (Aziz)
-# ---------------------------------------------------------------------------
-
-@st.cache_resource(show_spinner="Loading Random Forest model…")
-def load_rf_model():
-    with open("bot_detector.pkl", "rb") as f:
-        saved = pickle.load(f)
-    return saved["model"], saved["features"]
-
-
-@st.cache_data(show_spinner="Running Random Forest inference…")
-def compute_rf_probs(_all_entries, _rf_model, _rf_features):
-    df = create_csv(_all_entries)
-    df = create_features3(df)
-    results = predict_bot_probability(df, _rf_model, _rf_features)
-    id_to_prob: dict[str, float] = {}
-    for i, entry in enumerate(_all_entries):
-        uid = str(entry["ID"]).strip()
-        id_to_prob[uid] = float(results.iloc[i]["prob_bot"])
-    return id_to_prob
-
-
-# ---------------------------------------------------------------------------
-# BERT model (Hadrien)
-# ---------------------------------------------------------------------------
-
-@st.cache_resource(show_spinner="Loading BERT model…")
-def load_bert_model():
-    bert_model = AutoModelForSequenceClassification.from_pretrained("mon_modele_safetensors")
-    bert_tokenizer = AutoTokenizer.from_pretrained("mon_modele_safetensors")
-    return bert_model, bert_tokenizer
-
-
-@st.cache_data(show_spinner="Running BERT inference on tweets (~2 min)…")
-def compute_bert_probs(_all_entries, _bert_model, _bert_tokenizer):
-    clf = hf_pipeline(
-        "text-classification",
-        model=_bert_model,
-        tokenizer=_bert_tokenizer,
-        device=-1,
-    )
-    MAX_TWEETS = 5
-    id_to_prob: dict[str, float] = {}
-    for entry in _all_entries:
-        uid = str(entry["ID"]).strip()
-        tweets = entry.get("tweet") or []
-        tweets = [str(t) for t in tweets if t][:MAX_TWEETS]
-        if not tweets:
-            id_to_prob[uid] = 0.5  # no tweet info → neutral
-            continue
-        preds = clf(tweets, batch_size=32, top_k=None, truncation=True)
-        prob_bot = np.mean([
-            next(p["score"] for p in pred if p["label"] == "LABEL_1")
-            for pred in preds
-        ])
-        id_to_prob[uid] = float(prob_bot)
-    return id_to_prob
-
-
-# ---------------------------------------------------------------------------
-# Ensemble
-# ---------------------------------------------------------------------------
-
-def compute_ensemble_probs(
-    all_probs_gnn: np.ndarray,
-    rf_probs_dict: dict[str, float],
-    bert_probs_dict: dict[str, float],
-    all_entries: list[dict],
-    uid_to_idx: dict[str, int],
-) -> dict[str, float]:
-    """Average of 3 models. Returns dict ID → p_bot_ensemble."""
-    ensemble: dict[str, float] = {}
-    for entry in all_entries:
-        uid = str(entry["ID"]).strip()
-        p_gnn = float(all_probs_gnn[uid_to_idx[uid], 1]) if uid in uid_to_idx else 0.5
-        p_rf = rf_probs_dict.get(uid, 0.5)
-        p_bert = bert_probs_dict.get(uid, 0.5)
-        ensemble[uid] = (p_gnn + p_rf + p_bert) / 3.0
-    return ensemble
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -388,7 +298,7 @@ def compute_feature_importance(model, data, cfg, node_idx: int):
     return p_bot_base, importances
 
 
-def generate_user_summary(entry: dict, p_bot: float, ensemble_probs_map: dict[str, float]) -> str:
+def generate_user_summary(entry: dict, p_bot: float, all_probs_arr, uid_to_idx_map) -> str:
     """Generate a short natural-language summary of a user profile."""
     profile = entry.get("profile", {})
     screen_name = str(profile.get("screen_name", "")).strip()
@@ -419,10 +329,10 @@ def generate_user_summary(entry: dict, p_bot: float, ensemble_probs_map: dict[st
     following_ids = [str(x) for x in (neighbor.get("following") or [])]
     follower_ids = [str(x) for x in (neighbor.get("follower") or [])]
     all_nids = list(set(following_ids + follower_ids))
-    valid_nids = [nid for nid in all_nids if nid in ensemble_probs_map]
+    valid_nids = [nid for nid in all_nids if nid in uid_to_idx_map]
     n_neighbor_bots = sum(
         1 for nid in valid_nids
-        if ensemble_probs_map[nid] >= 0.5
+        if all_probs_arr[uid_to_idx_map[nid], 1] >= 0.5
     )
 
     # Build summary parts
@@ -488,7 +398,7 @@ st.set_page_config(
 )
 
 st.title("TwiBot – Bot Detector")
-st.caption("Ensemble bot detection (GNN + Random Forest + BERT) on the TwiBot-20 dataset")
+st.caption("Graph Neural Network bot detection on the TwiBot-20 dataset")
 
 # Load data
 all_entries, index_df = load_all_users()
@@ -507,15 +417,6 @@ model_type = st.sidebar.radio(
 # Load model + graph (cached)
 model, data, cfg, uid_to_idx = load_model_and_graph(model_type)
 all_probs = compute_all_probs(model, data, cfg, model_type)
-
-# Load ensemble models
-rf_model, rf_features = load_rf_model()
-rf_probs = compute_rf_probs(all_entries, rf_model, rf_features)
-
-bert_model, bert_tokenizer = load_bert_model()
-bert_probs = compute_bert_probs(all_entries, bert_model, bert_tokenizer)
-
-ensemble_probs = compute_ensemble_probs(all_probs, rf_probs, bert_probs, all_entries, uid_to_idx)
 
 st.sidebar.markdown("---")
 st.sidebar.header("User Search")
@@ -574,7 +475,9 @@ with tab_dash:
     # Key metrics row
     d1, d2, d3, d4 = st.columns(4)
     d1.metric("Total Users", f"{len(index_df):,}")
-    n_total_bots = sum(1 for p in ensemble_probs.values() if p >= 0.5)
+    n_total_bots = int((all_probs[
+        [uid_to_idx[str(all_entries[i]['ID']).strip()] for i in range(len(all_entries))]
+    , 1] >= 0.5).sum())
     n_total_humans = len(index_df) - n_total_bots
     d2.metric("Predicted Bots", f"{n_total_bots:,}")
     d3.metric("Predicted Humans", f"{n_total_humans:,}")
@@ -605,7 +508,7 @@ with tab_dash:
         for dom in all_domains_dash:
             idxs = domain_index[dom]
             p_bots_d = np.array([
-                ensemble_probs[str(all_entries[i]["ID"]).strip()]
+                all_probs[uid_to_idx[str(all_entries[i]["ID"]).strip()], 1]
                 for i in idxs
             ])
             n_b = int((p_bots_d >= 0.5).sum())
@@ -631,7 +534,7 @@ with tab_dash:
     # P(bot) distribution for all labeled users
     st.subheader("Overall P(Bot) Distribution")
     all_labeled_probs = np.array([
-        ensemble_probs[str(all_entries[i]["ID"]).strip()]
+        all_probs[uid_to_idx[str(all_entries[i]["ID"]).strip()], 1]
         for i in range(len(all_entries))
     ])
     fig_dash, ax_dash = plt.subplots(figsize=(10, 4))
@@ -653,7 +556,7 @@ with tab_dash:
     for tag, user_count in all_hashtags_dash[:10]:
         user_idxs = hashtag_index[tag]
         p_bots_ht = np.array([
-            ensemble_probs[str(all_entries[i]["ID"]).strip()]
+            all_probs[uid_to_idx[str(all_entries[i]["ID"]).strip()], 1]
             for i in user_idxs
         ])
         n_b_ht = int((p_bots_ht >= 0.5).sum())
@@ -690,10 +593,10 @@ with tab_user:
         profile = entry.get("profile", {})
         user_id = str(entry["ID"]).strip()
 
-        # Get prediction from ensemble
+        # Get prediction from cached probs
         node_idx = uid_to_idx[user_id]
-        p_bot = ensemble_probs[user_id]
-        p_human = 1.0 - p_bot
+        p_human = float(all_probs[node_idx, 0])
+        p_bot = float(all_probs[node_idx, 1])
         true_label = int(entry.get("label", -1))
 
         st.markdown("---")
@@ -724,7 +627,7 @@ with tab_user:
                     st.warning("Prediction differs from ground truth ✗")
 
         # Summary blurb
-        summary_text = generate_user_summary(entry, p_bot, ensemble_probs)
+        summary_text = generate_user_summary(entry, p_bot, all_probs, uid_to_idx)
         st.info(summary_text)
 
         st.markdown("---")
@@ -872,9 +775,9 @@ with tab_hashtag:
             user_indices = hashtag_index[chosen_tag]
             n_users = len(user_indices)
 
-            # Get predictions from ensemble
+            # Get predictions from cached probs
             p_bots = np.array([
-                ensemble_probs[str(all_entries[i]["ID"]).strip()]
+                all_probs[uid_to_idx[str(all_entries[i]["ID"]).strip()], 1]
                 for i in user_indices
             ])
             predicted_labels = (p_bots >= 0.5).astype(int)
@@ -1029,7 +932,7 @@ with tab_domain:
     for dom in all_domains:
         idxs = domain_index[dom]
         p_bots_dom = np.array([
-            ensemble_probs[str(all_entries[i]["ID"]).strip()]
+            all_probs[uid_to_idx[str(all_entries[i]["ID"]).strip()], 1]
             for i in idxs
         ])
         n_bots_dom = int((p_bots_dom >= 0.5).sum())
@@ -1083,7 +986,7 @@ with tab_domain:
         filtered_indices = sorted(filtered_set)
 
         p_bots_filtered = np.array([
-            ensemble_probs[str(all_entries[i]["ID"]).strip()]
+            all_probs[uid_to_idx[str(all_entries[i]["ID"]).strip()], 1]
             for i in filtered_indices
         ])
         n_filtered = len(filtered_indices)
@@ -1217,11 +1120,12 @@ with tab_graph:
             G.add_node(user_id, label=f"@{screen_name}", node_type="center")
 
             all_neighbor_ids = list(set(following_ids + follower_ids))
-            valid_neighbor_ids = [nid for nid in all_neighbor_ids if nid in ensemble_probs]
+            valid_neighbor_ids = [nid for nid in all_neighbor_ids if nid in uid_to_idx]
             missing_count = len(all_neighbor_ids) - len(valid_neighbor_ids)
 
             for nid in valid_neighbor_ids:
-                p_bot_n = ensemble_probs[nid]
+                idx = uid_to_idx[nid]
+                p_bot_n = float(all_probs[idx, 1])
                 # Try to find screen_name from index
                 match = index_df[index_df["ID"] == nid]
                 if not match.empty:
@@ -1231,10 +1135,10 @@ with tab_graph:
                 G.add_node(nid, label=nlabel, p_bot=p_bot_n)
 
             for nid in following_ids:
-                if nid in ensemble_probs:
+                if nid in uid_to_idx:
                     G.add_edge(user_id, nid, relation="following")
             for nid in follower_ids:
-                if nid in ensemble_probs:
+                if nid in uid_to_idx:
                     G.add_edge(nid, user_id, relation="follower")
 
             # Render
@@ -1286,7 +1190,7 @@ with tab_graph:
             # Stats below graph
             n_neighbor_bots = sum(
                 1 for nid in valid_neighbor_ids
-                if ensemble_probs[nid] >= 0.5
+                if all_probs[uid_to_idx[nid], 1] >= 0.5
             )
             st.markdown(
                 f"**{n_neighbor_bots}** of **{len(valid_neighbor_ids)}** "
@@ -1303,7 +1207,8 @@ with tab_graph:
             st.subheader("Neighbors")
             neighbor_rows = []
             for nid in valid_neighbor_ids:
-                p_bot_n = ensemble_probs[nid]
+                idx_n = uid_to_idx[nid]
+                p_bot_n = float(all_probs[idx_n, 1])
                 match = index_df[index_df["ID"] == nid]
                 sn = "@" + match.iloc[0]["screen_name"] if not match.empty else nid
                 rel = []
