@@ -1,4 +1,4 @@
-# HackEurope-2026-Hoga
+# HackEurope-2026-HOGA
 
 HackEurope-2026-Hoga is an advanced bot detection system developed during HackEurope 2026.
 The project combines three complementary machine learning paradigms to detect automated or coordinated malicious behavior:
