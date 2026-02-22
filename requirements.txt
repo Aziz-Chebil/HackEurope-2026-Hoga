@@ -1,0 +1,12 @@
+torch>=2.0
+torch-geometric>=2.4
+transformers
+safetensors
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+networkx
+streamlit
+kagglehub

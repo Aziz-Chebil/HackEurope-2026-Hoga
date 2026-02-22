@@ -13,6 +13,7 @@ dev.json
 test.json
 train.json
 *.txt
+!requirements.txt
 
 *.safetensors
 
