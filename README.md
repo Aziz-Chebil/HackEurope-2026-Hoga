@@ -44,13 +44,41 @@ A classical ensemble-based model trained on engineered tabular features.
 
 ## Installation
 
+**1. Clone the repository**
+
+```bash
 git clone https://github.com/Aziz-Chebil/HackEurope-2026-Hoga.git
 cd HackEurope-2026-Hoga
-python -m venv venv
-source venv/bin/activate  # Mac/Linux
-venv\Scripts\activate     # Windows
-pip install numpy pandas scikit-learn torch transformers torch-geometric matplotlib seaborn
+```
 
+**2. Create and activate a virtual environment**
+
+```bash
+python -m venv venv
+```
+
+- On **macOS / Linux:**
+  ```bash
+  source venv/bin/activate
+  ```
+
+- On **Windows:**
+  ```bash
+  venv\Scripts\activate
+  ```
+
+**3. Install dependencies**
+
+```bash
+pip install numpy pandas scikit-learn torch transformers torch-geometric matplotlib seaborn
+```
+
+---
 ## Running the Project
 
+Once the environment is set up and dependencies are installed, run:
+
+```bash
 python app.py
+```
+
