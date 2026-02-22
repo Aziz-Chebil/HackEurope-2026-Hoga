@@ -2,6 +2,7 @@
 
 import json
 import os
+import random
 import re
 import sys
 from collections import Counter
@@ -297,6 +298,95 @@ def compute_feature_importance(model, data, cfg, node_idx: int):
     return p_bot_base, importances
 
 
+def generate_user_summary(entry: dict, p_bot: float, all_probs_arr, uid_to_idx_map) -> str:
+    """Generate a short natural-language summary of a user profile."""
+    profile = entry.get("profile", {})
+    screen_name = str(profile.get("screen_name", "")).strip()
+    name = str(profile.get("name", "")).strip()
+    followers = _safe_int(profile.get("followers_count"))
+    friends = _safe_int(profile.get("friends_count"))
+    statuses = _safe_int(profile.get("statuses_count"))
+    verified = str(profile.get("verified", "")).strip().lower() == "true"
+    default_image = str(profile.get("default_profile_image", "")).strip().lower() == "true"
+    desc = str(profile.get("description", "")).strip()
+    if desc.lower() in ("none", ""):
+        desc = ""
+    domains = entry.get("domain") or []
+
+    # Account age
+    age_years = 0
+    created_str = str(profile.get("created_at", "")).strip()
+    if created_str and created_str.lower() != "none":
+        try:
+            dt = datetime.strptime(created_str, "%a %b %d %H:%M:%S %z %Y")
+            collection = datetime(2022, 2, 1, tzinfo=dt.tzinfo)
+            age_years = max((collection - dt).days / 365.25, 0)
+        except ValueError:
+            pass
+
+    # Neighbor bot rate
+    neighbor = entry.get("neighbor") or {}
+    following_ids = [str(x) for x in (neighbor.get("following") or [])]
+    follower_ids = [str(x) for x in (neighbor.get("follower") or [])]
+    all_nids = list(set(following_ids + follower_ids))
+    valid_nids = [nid for nid in all_nids if nid in uid_to_idx_map]
+    n_neighbor_bots = sum(
+        1 for nid in valid_nids
+        if all_probs_arr[uid_to_idx_map[nid], 1] >= 0.5
+    )
+
+    # Build summary parts
+    parts = []
+
+    # Identity
+    if name and name.lower() != "none":
+        parts.append(f"**@{screen_name}** ({name})")
+    else:
+        parts.append(f"**@{screen_name}**")
+
+    # Verdict
+    if p_bot >= 0.8:
+        parts.append(f"is predicted as a **bot** with high confidence ({p_bot:.0%}).")
+    elif p_bot >= 0.5:
+        parts.append(f"is predicted as a **probable bot** ({p_bot:.0%}).")
+    elif p_bot >= 0.2:
+        parts.append(f"is predicted as a **probable human** ({1 - p_bot:.0%} confidence).")
+    else:
+        parts.append(f"is predicted as **human** with high confidence ({1 - p_bot:.0%}).")
+
+    summary = " ".join(parts)
+
+    # Profile details
+    details = []
+    if verified:
+        details.append("The account is **verified**.")
+    if age_years >= 1:
+        details.append(f"It was created **{age_years:.0f} years** before data collection.")
+    details.append(
+        f"It has **{format_number(followers)}** followers, "
+        f"follows **{format_number(friends)}** accounts, "
+        f"and has posted **{format_number(statuses)}** tweets."
+    )
+    if default_image:
+        details.append("It still uses the **default profile image**, a common bot indicator.")
+    if not desc:
+        details.append("The account has **no bio**.")
+    if domains:
+        details.append(f"Active in: {', '.join(domains)}.")
+
+    summary += " " + " ".join(details)
+
+    # Neighbor context
+    if valid_nids:
+        neighbor_bot_pct = n_neighbor_bots / len(valid_nids) * 100
+        summary += (
+            f" In its social neighborhood, **{n_neighbor_bots}/{len(valid_nids)}** "
+            f"connections ({neighbor_bot_pct:.0f}%) are also predicted as bots."
+        )
+
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # UI setup
 # ---------------------------------------------------------------------------
@@ -335,6 +425,10 @@ query = st.sidebar.text_input(
     placeholder="e.g. SHAQ, elonmusk, 17461978",
 )
 
+# Random user button
+if st.sidebar.button("🎲 Random user"):
+    st.session_state["random_idx"] = random.randint(0, len(all_entries) - 1)
+
 results = search_users(index_df, query)
 
 if query and results.empty:
@@ -356,8 +450,16 @@ if not results.empty:
     )
     selected_idx = int(results.iloc[choice]["idx"])
 
+# Random user overrides search selection
+if "random_idx" in st.session_state:
+    selected_idx = st.session_state.pop("random_idx")
+    random_entry = all_entries[selected_idx]
+    random_sn = str(random_entry.get("profile", {}).get("screen_name", "")).strip()
+    st.sidebar.success(f"Random: @{random_sn}")
+
 # Tabs
-tab_user, tab_hashtag, tab_domain, tab_perf, tab_graph, tab_explain = st.tabs([
+tab_dash, tab_user, tab_hashtag, tab_domain, tab_perf, tab_graph, tab_explain = st.tabs([
+    "🏠 Dashboard",
     "👤 User Search",
     "#️⃣ Hashtag Explorer",
     "🌐 Domain Explorer",
@@ -365,6 +467,115 @@ tab_user, tab_hashtag, tab_domain, tab_perf, tab_graph, tab_explain = st.tabs([
     "🕸️ Social Graph",
     "🔍 Explicability",
 ])
+
+# ===================================================================
+# TAB 0 — Dashboard
+# ===================================================================
+with tab_dash:
+    # Key metrics row
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Total Users", f"{len(index_df):,}")
+    n_total_bots = int((all_probs[
+        [uid_to_idx[str(all_entries[i]['ID']).strip()] for i in range(len(all_entries))]
+    , 1] >= 0.5).sum())
+    n_total_humans = len(index_df) - n_total_bots
+    d2.metric("Predicted Bots", f"{n_total_bots:,}")
+    d3.metric("Predicted Humans", f"{n_total_humans:,}")
+    d4.metric("Predicted Bot Rate", f"{n_total_bots / len(index_df):.1%}")
+
+    st.markdown("---")
+
+    # Model performance summary + domain breakdown side by side
+    dash_left, dash_right = st.columns(2)
+
+    with dash_left:
+        st.subheader(f"Model: {model_type.upper()}")
+        metrics_dash = cached_evaluate_test(model, data, cfg, model_type)
+        perf_col1, perf_col2 = st.columns(2)
+        perf_col1.metric("Accuracy", f"{metrics_dash['accuracy']:.1%}")
+        perf_col1.metric("Precision", f"{metrics_dash['precision']:.1%}")
+        perf_col2.metric("F1 Score", f"{metrics_dash['f1']:.1%}")
+        perf_col2.metric("Recall", f"{metrics_dash['recall']:.1%}")
+
+        test_labels_d = metrics_dash["test_labels"]
+        n_test_d = len(test_labels_d)
+        st.caption(f"Evaluated on {n_test_d:,} test users")
+
+    with dash_right:
+        st.subheader("Bot Rate by Domain")
+        all_domains_dash = sorted(domain_index.keys())
+        dom_rows_dash = []
+        for dom in all_domains_dash:
+            idxs = domain_index[dom]
+            p_bots_d = np.array([
+                all_probs[uid_to_idx[str(all_entries[i]["ID"]).strip()], 1]
+                for i in idxs
+            ])
+            n_b = int((p_bots_d >= 0.5).sum())
+            dom_rows_dash.append({
+                "Domain": dom,
+                "Users": len(idxs),
+                "Bot Rate": n_b / len(idxs) * 100 if idxs else 0,
+            })
+        dom_df_dash = pd.DataFrame(dom_rows_dash)
+        st.dataframe(
+            dom_df_dash,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Bot Rate": st.column_config.ProgressColumn(
+                    "Bot Rate", format="%.0f%%", min_value=0, max_value=100,
+                ),
+            },
+        )
+
+    st.markdown("---")
+
+    # P(bot) distribution for all labeled users
+    st.subheader("Overall P(Bot) Distribution")
+    all_labeled_probs = np.array([
+        all_probs[uid_to_idx[str(all_entries[i]["ID"]).strip()], 1]
+        for i in range(len(all_entries))
+    ])
+    fig_dash, ax_dash = plt.subplots(figsize=(10, 4))
+    ax_dash.hist(all_labeled_probs, bins=50, color="#6c5ce7", alpha=0.8, edgecolor="white")
+    ax_dash.axvline(0.5, color="red", linestyle="--", linewidth=1.5, label="Threshold (0.5)")
+    ax_dash.set_xlabel("P(Bot)")
+    ax_dash.set_ylabel("Number of users")
+    ax_dash.set_title("Distribution of Bot Probability Across All Users")
+    ax_dash.legend()
+    st.pyplot(fig_dash)
+    plt.close(fig_dash)
+
+    st.markdown("---")
+
+    # Top 10 most popular hashtags with bot rates
+    st.subheader("Top 10 Hashtags")
+    all_hashtags_dash = get_all_hashtags(all_entries)
+    top_ht_rows = []
+    for tag, user_count in all_hashtags_dash[:10]:
+        user_idxs = hashtag_index[tag]
+        p_bots_ht = np.array([
+            all_probs[uid_to_idx[str(all_entries[i]["ID"]).strip()], 1]
+            for i in user_idxs
+        ])
+        n_b_ht = int((p_bots_ht >= 0.5).sum())
+        top_ht_rows.append({
+            "Hashtag": f"#{tag}",
+            "Users": user_count,
+            "Bot Rate": n_b_ht / user_count * 100 if user_count > 0 else 0,
+        })
+    top_ht_df = pd.DataFrame(top_ht_rows)
+    st.dataframe(
+        top_ht_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Bot Rate": st.column_config.ProgressColumn(
+                "Bot Rate", format="%.0f%%", min_value=0, max_value=100,
+            ),
+        },
+    )
 
 # ===================================================================
 # TAB 1 — User Search
@@ -376,7 +587,7 @@ with tab_user:
         col1.metric("Total users", f"{len(index_df):,}")
         col2.metric("Bots", f"{(index_df['label'] == 1).sum():,}")
         col3.metric("Humans", f"{(index_df['label'] == 0).sum():,}")
-        st.info("Use the sidebar to search for a user and run bot detection.")
+        st.info("Use the sidebar to search for a user, or click **🎲 Random user**.")
     else:
         entry = all_entries[selected_idx]
         profile = entry.get("profile", {})
@@ -414,6 +625,10 @@ with tab_user:
                     st.success("Prediction matches ground truth ✓")
                 else:
                     st.warning("Prediction differs from ground truth ✗")
+
+        # Summary blurb
+        summary_text = generate_user_summary(entry, p_bot, all_probs, uid_to_idx)
+        st.info(summary_text)
 
         st.markdown("---")
 
